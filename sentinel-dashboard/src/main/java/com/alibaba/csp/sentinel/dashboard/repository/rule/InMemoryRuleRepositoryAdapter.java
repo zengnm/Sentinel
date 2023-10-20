@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 import com.alibaba.csp.sentinel.dashboard.datasource.entity.rule.RuleEntity;
 import com.alibaba.csp.sentinel.dashboard.discovery.MachineInfo;
@@ -42,7 +43,8 @@ public abstract class InMemoryRuleRepositoryAdapter<T extends RuleEntity> implem
     @Override
     public T save(T entity) {
         if (entity.getId() == null) {
-            entity.setId(nextId());
+            // 规则配置可能直接配到动态数据源，因此采用时间戳用以区分
+            entity.setId(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(10000) + nextId());
         }
         T processedEntity = preProcess(entity);
         if (processedEntity != null) {

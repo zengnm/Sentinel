@@ -18,21 +18,24 @@ package com.alibaba.csp.sentinel.dashboard.controller.gateway;
 
 import com.alibaba.csp.sentinel.dashboard.auth.AuthAction;
 import com.alibaba.csp.sentinel.dashboard.auth.AuthService;
-import com.alibaba.csp.sentinel.dashboard.client.SentinelApiClient;
 import com.alibaba.csp.sentinel.dashboard.datasource.entity.gateway.GatewayFlowRuleEntity;
 import com.alibaba.csp.sentinel.dashboard.datasource.entity.gateway.GatewayParamFlowItemEntity;
-import com.alibaba.csp.sentinel.dashboard.discovery.MachineInfo;
 import com.alibaba.csp.sentinel.dashboard.domain.Result;
 import com.alibaba.csp.sentinel.dashboard.domain.vo.gateway.rule.AddFlowRuleReqVo;
 import com.alibaba.csp.sentinel.dashboard.domain.vo.gateway.rule.GatewayParamFlowItemVo;
 import com.alibaba.csp.sentinel.dashboard.domain.vo.gateway.rule.UpdateFlowRuleReqVo;
 import com.alibaba.csp.sentinel.dashboard.repository.gateway.InMemGatewayFlowRuleStore;
+import com.alibaba.csp.sentinel.dashboard.rule.nacos.NacosConfigUtil;
+import com.alibaba.csp.sentinel.dashboard.rule.nacos.RuleNacosProvider;
+import com.alibaba.csp.sentinel.dashboard.rule.nacos.RuleNacosPublisher;
 import com.alibaba.csp.sentinel.util.StringUtil;
+import com.alibaba.fastjson.JSON;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
@@ -57,12 +60,13 @@ public class GatewayFlowRuleController {
     private InMemGatewayFlowRuleStore repository;
 
     @Autowired
-    private SentinelApiClient sentinelApiClient;
+    private RuleNacosProvider ruleProvider;
+    @Autowired
+    private RuleNacosPublisher rulePublisher;
 
     @GetMapping("/list.json")
     @AuthAction(AuthService.PrivilegeType.READ_RULE)
     public Result<List<GatewayFlowRuleEntity>> queryFlowRules(String app, String ip, Integer port) {
-
         if (StringUtil.isEmpty(app)) {
             return Result.ofFail(-1, "app can't be null or empty");
         }
@@ -74,7 +78,16 @@ public class GatewayFlowRuleController {
         }
 
         try {
-            List<GatewayFlowRuleEntity> rules = sentinelApiClient.fetchGatewayFlowRules(app, ip, port).get();
+            String ruleStr = ruleProvider.getRules(app+NacosConfigUtil.GATEWAY_FLOW_DATA_ID_POSTFIX);
+            List<GatewayFlowRuleEntity> rules = new ArrayList<>();
+            if (ruleStr != null) {
+                rules = JSON.parseArray(ruleStr, GatewayFlowRuleEntity.class);
+                if (rules != null && !rules.isEmpty()) {
+                    for (GatewayFlowRuleEntity entity : rules) {
+                        entity.setApp(app);
+                    }
+                }
+            }
             repository.saveAll(rules);
             return Result.ofSuccess(rules);
         } catch (Throwable throwable) {
@@ -243,9 +256,7 @@ public class GatewayFlowRuleController {
             return Result.ofThrowable(-1, throwable);
         }
 
-        if (!publishRules(app, ip, port)) {
-            logger.warn("publish gateway flow rules fail after add");
-        }
+        publishRules(entity.getApp());
 
         return Result.ofSuccess(entity);
     }
@@ -389,10 +400,7 @@ public class GatewayFlowRuleController {
             return Result.ofThrowable(-1, throwable);
         }
 
-        if (!publishRules(app, entity.getIp(), entity.getPort())) {
-            logger.warn("publish gateway flow rules fail after update");
-        }
-
+        publishRules(entity.getApp());
         return Result.ofSuccess(entity);
     }
 
@@ -417,15 +425,18 @@ public class GatewayFlowRuleController {
             return Result.ofThrowable(-1, throwable);
         }
 
-        if (!publishRules(oldEntity.getApp(), oldEntity.getIp(), oldEntity.getPort())) {
-            logger.warn("publish gateway flow rules fail after delete");
-        }
+        publishRules(oldEntity.getApp());
 
         return Result.ofSuccess(id);
     }
 
-    private boolean publishRules(String app, String ip, Integer port) {
-        List<GatewayFlowRuleEntity> rules = repository.findAllByMachine(MachineInfo.of(app, ip, port));
-        return sentinelApiClient.modifyGatewayFlowRules(app, ip, port, rules);
+    private void publishRules(String app) {
+        List<GatewayFlowRuleEntity> rules = repository.findAllByApp(app);
+        String ruleStr = JSON.toJSONString(rules);
+        try {
+            rulePublisher.publish(app + NacosConfigUtil.GATEWAY_FLOW_DATA_ID_POSTFIX, ruleStr);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 }
